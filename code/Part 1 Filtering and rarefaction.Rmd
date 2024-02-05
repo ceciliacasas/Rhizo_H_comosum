@@ -1,0 +1,666 @@
+---
+title: "Data analyses workflow"
+subtitle: "Part 1: quality fltering and rarefaction"
+output:
+  word_document:
+    toc: yes
+  html_notebook:
+    toc: yes
+  html_document:
+    highlight: tango
+    number_sections: yes
+    theme: readable
+    toc: yes
+editor_options:
+  chunk_output_type: console
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include=TRUE)
+```
+
+```{r load-packages}
+pacman::p_load(rmarkdown, knitr,phyloseq, ggplot2, vegan, microbiome, gridExtra, plyr, dplyr, RColorBrewer, tidyr, ggcorrplot, readxl)
+
+```
+
+# Read OTU table 
+
+```{r read_table}
+setwd("C:/Users/ccasas/OneDrive - Facultad de Agronomía - Universidad de Buenos Aires/Rhizo fungal guild - Git")
+
+otu <- read_excel("data/OTU_table_BLAST.xlsx", sheet = "OTU table")
+
+# Change names for convenience
+colnames(otu)[2] <- "AccNoUNITEv9_6"
+colnames(otu)[14:25]<-c("e_value" , "query_len", "query_start", "query_end", "target_len", "target_start", "target_end",  "align_len", "identities", "gaps", "coverage_perc", "id_perc" )
+
+# names(otu)
+```
+
+# Keep only soil samples
+
+The table contains:
+
+-   Soil samples (CC001 - CC238) 
+
+-   Seeds samples (1_Seed_No_St 1_Seed_St)
+
+-   ITS4ngsUni001 ITS4ngsUni003 ITS4ngsUni008 ITS4ngsUni014 ITS4ngsUni015 1_ITS4ngsUni_089 2_ITS4ngsUni_087 2_ITS4ngsUni_088 3_ITS4ngsUni_087 3_ITS4ngsUni_088 3_ITS4ngsUni_089 4_ITS4ngsUni_087 4_ITS4ngsUni_088
+
+-   NC1 NC2 NC3 NC4
+
+-   Pos1 Pos2 Pos3 Pos4
+
+-   empty1 empty2
+
+
+# Read Phyloseq
+
+## OTU table
+```{r}
+colsCC<-grep("CC", names(otu), value = TRUE)
+
+otu_file<-otu[,names(otu)%in%colsCC]
+rownames(otu_file)<-otu$OTU_ID...27
+#dim(otu_file)
+
+```
+
+## Taxonomy file
+```{r}
+taxonomy_file<-otu[, c("Kingdom","Phylum","Class","Order",	"Family","Genus","Species")]
+rownames(taxonomy_file)<-otu$OTU_ID...27
+```
+
+## Sample data
+```{r}
+site_data<-read.csv("data/Data FE-2021-00537.csv", header= TRUE, sep= ";", row.names= colsCC)
+#rownames(site_data)
+site_data$Herbivory<-as.factor(site_data$Herbivory)
+#summary(site_data)
+```
+
+
+## Read the files as phyloseq class object.
+
+```{r}
+otu_file<-as.matrix(otu_file)
+taxonomy_file<-as.matrix(taxonomy_file)
+
+OTU = otu_table(otu_file, taxa_are_rows = TRUE)
+TAX = tax_table(taxonomy_file)
+site_data = sample_data(site_data)
+
+physeq.data = phyloseq(OTU, TAX, site_data)
+physeq.data
+
+```
+
+# Select only kingdom Fungi
+
+```{r}
+physeq.fungi <- subset_taxa(physeq.data, Kingdom=="Fungi")
+physeq.fungi
+```
+
+## Remove zero OTUS 
+
+Zero reads correspond to OTU detected in samples excluded above such as Seeds, ITS4, NC, pos, empty, etc...
+
+```{r}
+physeq.fungi<-subset_taxa(physeq.fungi, taxa_sums(physeq.fungi)>0)  
+physeq.fungi
+
+```
+
+### Save physeq.fungi
+
+```{r}
+saveRDS(physeq.fungi, file = "data/1_physeq.fungi.rds")
+
+```
+
+> 47% of taxa (17024/36031) belongs to Fungi kindom. 
+
+# Quality filtering
+
+## Rarefaction: define threshold 
+```{r}
+n_seq <- colSums(otu_table(physeq.fungi))
+# Create a data frame with sample names and corresponding sequencing depths
+depth_data <- data.frame(Sample = colnames(otu_table(physeq.fungi)), n_seq = n_seq)
+
+depth_data %>%
+  ggplot(aes(x= 1, y=n_seq)) +
+  geom_jitter() +
+  scale_y_log10()
+
+depth_data %>%
+  arrange(n_seq) %>%
+  ggplot(aes(x= 1:nrow(.), y=n_seq)) +
+  geom_line() 
+
+depth_data %>%
+  arrange(n_seq) %>%
+  ggplot(aes(x= 1:nrow(.), y=n_seq)) +
+  geom_line() +
+  geom_point()+
+  coord_cartesian(xlim=c(0,50), ylim=c(0,25000)) +
+  geom_hline(yintercept=8000, color="grey", linetype='dashed', size=1) 
+
+depth_data_arran<-depth_data %>%
+  arrange(n_seq) 
+
+# head(depth_data_arran, n = 20)
+
+```
+
+Sample n_seq
+  CC122     5
+  CC187  2606
+  CC123  4553
+  CC189  4922 
+  CC024  6758
+  CC188  7058 # DEPTH for rarefaction = 8000
+  CC126  9539
+  CC118  9727
+  CC231  9732
+  CC140  9922
+  CC070 10668
+  CC226 10919
+  CC166 10925
+  CC119 11681
+  CC233 11688
+  CC017 12152
+  CC238 12196
+  CC163 12211
+  CC023 12343
+  CC115 12477
+
+> I have arrived to the same result: excluding the same six samples when doing the same analyses with seqeuncing depth calculated from demultiplexed R1 fastq files (So, this includes all sequences including non-fungal). 
+
+# Sample coverage 
+## Calculate good coverage at sample level
+### Sample singletons
+```{r}
+
+depth_data$seq_single <- colSums(otu_table(physeq.fungi)==1)
+
+coverage_stat<-depth_data %>%
+  reframe(n_seq = n_seq, 
+          goods= 100*(1 - seq_single/n_seq)) 
+
+coverage_stat%>%
+  ggplot(aes(x=n_seq, y=goods))+
+  geom_point()
+
+```
+
+> coverage is 100% for all sample....there are no singletons at sample level. 
+
+### Sample doubletons coverage
+```{r}
+# Calculate good coverage
+depth_data$seq_double <- colSums(otu_table(physeq.fungi)==2)
+
+coverage_stat<-depth_data %>%
+  reframe(Sample= rownames(depth_data), 
+          n_seq = n_seq, 
+          goods= 100*(1 - seq_double/n_seq)) 
+
+coverage_stat%>%
+  ggplot(aes(x=n_seq, y=goods))+
+  geom_point()
+
+# coverage_stat %>%
+#   filter(n_seq>10000) %>% 
+#   ggplot(aes(x=n_seq, y=goods))+
+#   geom_point()
+
+coverage_stat %>%
+  filter(goods>97) %>% 
+  ggplot(aes(x=n_seq, y=goods))+
+  geom_point()
+
+head(coverage_stat %>%
+  arrange(goods))
+
+```
+
+  Sample n_seq    goods
+1  CC122     5 80.00000
+2  CC187  2606 97.35226
+3  CC189  4922 98.19179
+4  CC123  4553 98.59433
+5  CC188  7058 98.66818
+6  CC140  9922 98.85104
+
+> Except from the first (and maybe the second) coverage of doubletons is also good. 
+> Then, **rarefaction threshold may be 5000 or 8000**. The difference between both thresholds is one sample (CC188).
+> I keep to 8000 so, more depth in the analyses and missing five samples.
+
+One thing to **observe** is that five (out of six) samples came from two sites. But there are 8 samples per site. 
+
+```{r}
+sample_data(physeq.fungi)[rownames(sample_data(physeq.fungi)) %in% c("CC024", "CC122", "CC187", "CC123", "CC189", "CC188"), c("Sample", "Site", "PrecWorldClim")]
+
+```
+
+ Sample Site    MAP  Environment
+  CC024    3    307  semiarid
+  CC122   18    160  arid
+  CC123   18    160  arid
+  CC187   26    442  semiarid
+  CC188   26    442  semiarid
+  CC189   26    442  semiarid
+
+MAP = mean annual precipitation (mm)
+
+# Rarefaction curve
+
+```{r}
+OTU<-otu_table(physeq.fungi)
+OTU_tras<- as.data.frame(t(OTU))
+
+## plotting the rarefaction curve, by sample
+# pdf("Rarefaction curve by sample.pdf")
+rarecurve(OTU_tras, step = 20, label = F, col = "gray", legend=T)
+# dev.off()
+
+#plotting rarecurve  by grazing
+#create color vector
+# rare_color <- site_data$Herbivory[match(row.names(OTU_tras), row.names(site_data))]
+# rare_color<-revalue(rare_color, c("Intense"="red", "Moderate"="blue"))
+
+#pdf("Rarefaction curve by grazing.pdf")
+#rarecurve(forrare, step = 20, label = F, col = rare_color, legend=T)
+#dev.off()
+```
+
+## Octave plot
+
+```{r}
+OTUsum<-rowSums(t(OTU)) 
+sum(OTUsum)
+length(OTUsum)
+
+mod.oct <- prestonfit(OTUsum, tiesplit=F)
+plot(mod.oct)
+
+```
+
+## Rarefaction
+
+> sample.size= 8000 according to previous figures
+
+```{r}
+threshold= 8000
+
+physeq.rare <- rarefy_even_depth(physeq.fungi, sample.size = threshold, rngseed = 1111 , replace = FALSE, trimOTUs = TRUE, verbose = TRUE)
+
+# ...
+# 6 samples removed because they contained fewer reads than `sample.size`.
+# Up to first five removed samples are: 
+# 
+# CC024
+# CC122
+# CC123
+# CC187
+# CC188
+# CC189
+# ...
+# 2995 OTUs were removed because they are no longer 
+# present in any sample after random subsampling
+# 
+# ...
+
+thrown_samples <- names(colSums(OTU)[colSums(OTU)<threshold])
+
+write.csv(
+  data.frame(sample.name = thrown_samples,
+             site = site_data$Site[match(thrown_samples, row.names(site_data))],
+             plant = site_data$Plant[match(thrown_samples, row.names(site_data))],
+             sample.depth = unname(colSums(OTU)[colSums(OTU)<threshold])),
+  "data/thrown samples after rarefaction.csv")
+
+```
+
+# Save phyloseq object of rarefied OTU
+```{r}
+saveRDS(physeq.rare, file = "data/2_physeq.rare.rds")
+```
+
+
+> 47% of taxa (17024/36031) belongs to Fungi kindom.
+> After rarefaction we keep 14029 taxa, this is 82.4% of Fungi (14029/17024). And, we miss 17.6% of taxa. 
+
+
+# Rarefaction formula by Schloss and comparison
+
+```{r}
+rare_schloss_fn <- function(x, sample){
+  
+  x <- x[x>0]
+  sum(1-exp(lchoose(sum(x) - x, sample) - lchoose(sum(x), sample)))
+  
+}
+```
+
+```{r}
+# richness from original data set
+depth_data$rich_obs<- estimate_richness(physeq.fungi, measures = "Observed")[,1]
+
+# richness from rarefied data to compare with schloss formula
+rich_rare<- estimate_richness(physeq.rare, measures = "Observed")
+rich_rare$Sample=rownames(rich_rare)
+colnames(rich_rare)[1]<-"rich_rare"
+head(rich_rare)
+
+depth_data<-merge(depth_data, rich_rare, by="Sample", all=T)
+#head(depth_data)
+
+depth_data %>%
+  summarize(min=min(n_seq), 
+            max=max(n_seq))
+82445/5
+
+```
+
+## prerate data set to apply rarefaction by Schloss
+```{r}
+OTU<-as.data.frame(otu_table(physeq.fungi))
+OTU$otu_name<-rownames(OTU)
+
+otu_piOTUotu_pivot <- pivot_longer(OTU, cols=starts_with("CC"), names_to="Sample", values_to="n_seq", cols_vary="fastest") %>%
+  as.data.frame()
+
+head(otu_piOTUotu_pivot)
+
+```
+
+## rarefaction by Schloss
+```{r}
+rarefaction_schloss<-otu_piOTUotu_pivot %>%
+    dplyr:: group_by(Sample) %>%
+    dplyr::summarise(rich_schloss= rare_schloss_fn(n_seq, threshold), 
+              n=sum(n_seq), 
+              sobs= sum(n_seq>0))
+
+depth_data<-merge(depth_data, rarefaction_schloss, by="Sample", all=T)
+head(depth_data)
+
+```
+
+>Correlation between rarefaction options
+
+```{r}
+cor(depth_data$rich_rare, depth_data$rich_schloss, method = c("spearman"), use="complete.obs")
+```
+
+#### Plots
+```{r}
+depth_data %>%
+  ggplot(aes(x=rich_rare, y=rich_schloss)) +
+  geom_point() +
+  geom_smooth() +
+  theme_minimal()
+
+
+depth_data %>%
+ pivot_longer(cols=c(rich_obs, rich_rare, rich_schloss), values_to = "rich", names_to = "type") %>%
+  ggplot(aes(x=n, y=rich, col=type))+
+  geom_point()+
+  geom_smooth()+
+  theme_minimal()
+
+```
+
+## Octave plot after rarefaction
+
+```{r}
+OTUsum<-as.integer(taxa_sums(physeq.rare))
+str(OTUsum)
+mod.oct <- prestonfit(OTUsum, tiesplit = F)
+plot(mod.oct)
+
+
+```
+
+
+# Filtering after rarefaction
+
+## Chimeras: Singletons and low number of reads
+
+*  Remove singletons.       
+*  Remove doubletons with similarity <0.9 and similarity >0.9&coverage <0.98. 
+*  and OTUs with BLASTn e-value >10-50 to exclude additional potential chimeras. 
+
+In this OTU table, *Similarity = id_perc (id%)*
+
+### Remove singletons 
+
+```{r}
+#subset_taxa(physeq.rare, taxa_sums(physeq.rare) == 0)
+
+subset_taxa(physeq.rare, taxa_sums(physeq.rare) == 1)
+
+physeq.rare.clean<-subset_taxa(physeq.rare, taxa_sums(physeq.rare) > 1)  
+#physeq.rare.clean
+
+# taxa_sums(physeq.rare.clean)
+```
+
+There were 2919 singletons (20%; 2919/14029).
+
+After removing singletons, there are 11110 taxa (80%).
+
+##### Exclude doubletons. 
+
+```{r}
+double_names<-taxa_names(subset_taxa(physeq.rare.clean, taxa_sums(physeq.rare.clean) ==2))
+```
+
+There are `r length(double_names)` doubletons. 
+We excluded doubletons with similarity <0.9 and similarity >0.9&coverage <0.98. 
+
+```{r}
+
+to.exclude.id<-otu[otu$OTU_ID...1 %in% double_names,] %>%
+   select (OTU_ID...1, id_perc,  coverage_perc, query_len) %>%
+   filter(id_perc<.9)
+
+#plot(to.exclude.id$id_perc)
+
+to.exclude.cov<-otu[otu$OTU_ID...1 %in% double_names,] %>%
+  select (OTU_ID...1, id_perc,  coverage_perc, query_len) %>%
+   filter(id_perc>.9) %>%
+   filter(coverage_perc<.98)
+
+#plot(to.exclude.cov$coverage_perc)
+  
+to.exclude<-merge(to.exclude.id, to.exclude.cov, all=TRUE)
+
+# dim(to.exclude.id)
+# dim(to.exclude.cov)
+# dim(to.exclude)
+
+```
+
+
+```{r}
+filtered_otu <- subset(otu_table(physeq.rare.clean), !rownames(otu_table(physeq.rare.clean)) %in% to.exclude$OTU_ID...1)
+physeq.filtered <- merge_phyloseq(filtered_otu, tax_table(physeq.rare.clean), sample_data(physeq.rare.clean))
+physeq.filtered
+
+```
+
+> There were `r  dim(to.exclude)[1]`  doubletons (2 reads OTUs) with  id_perc\<=.9 or id_perc\>=.9 + coverage_perc\<=.98 in total (row sum).\
+
+There were 2919 singletons (5.5%; 615/11110).
+
+After removing these doubletons, there are 10495 taxa (94.4%).
+
+
+# Save phylo.data
+```{r}
+saveRDS(physeq.filtered, file = "data/3_physeq.rare.filtered.rds")
+```
+
+
+```{r}
+OTUsum<-as.integer(taxa_sums(physeq.filtered))
+str(OTUsum)
+mod.oct <- prestonfit(OTUsum, tiesplit = F)
+plot(mod.oct)
+
+sum(OTUsum) 
+length(OTUsum) 
+
+```
+
+<!-- ## see how many have less than 5 occurences -->
+
+```{r}
+# phylo.rare.clean.less.5<-subset_taxa(physeq.filtered, taxa_sums(physeq.filtered) < 5)  
+# phylo.rare.clean.less.5
+
+```
+
+
+### Just to check = proportion of OTUs with 100% similarity
+```{r}
+
+filtered.otu<-rownames(otu_table(physeq.filtered))
+
+filtered.qualy<-otu[otu$OTU_ID...1 %in% filtered.otu,] %>%
+  select (OTU_ID...1, id_perc,  coverage_perc, query_len, e_value) 
+   
+hist(filtered.qualy$id_perc)
+
+length(which(filtered.qualy$id_perc>=.90))/nrow(filtered.qualy)
+
+```
+
+## e-value 
+
+**From Tedersoo et al. (2021):**
+[The Global Soil Mycobiome consortium dataset for boosting fungal diversity research](https://www.researchgate.net/publication/356645800_The_Global_Soil_Mycobiome_consortium_dataset_for_boosting_fungal_diversity_research)[accessed Feb 05 2024].
+
+"...we set the following taxon-specific thresholds: kingdom, emax = e−50; phylum, emax = e−55 to e−80; class, emax = e−70 to e−100; order, emax = e−80 to e−120; genus, sequence similarity to the best match > 85–95% (Table S3).
+In general, lower thresholds were set for phyla comprising unicellular fungi and groups with divergent ITS sequences; higher thresholds were set for selected ascomycete groups displaying both low ITS sequence divergence and vigorous splitting of classes into orders and genera. 
+
+At the kingdom level, OTUs best matching to Fungi or unspecified kingdoms at e < e−50 were re-studied by custom BLAST + searches (Tedersoo et al. 2020a) against a smaller reference dataset(https://doi.org/10.15156/BIO/1444347) that was populated with a single representative sequence per 1.5% SH and representative sequences of fungi and other eukaryotes (OTUs with e-values ranging from e−60 to e−100 to the best-hitting reference) from this dataset. If the five best matches were fungi, the corresponding OTUs were included in the fungal kingdom."  
+
+
+We considered e-values of BLASTn <= 1e−50 reliable to assign sequences to the fungal kingdom.
+<!-- (E-values between 1e−20 and 1e−50 were manually checked against the 10 best matches for accurate assignment. -->
+<!-- whereas those e-values <1e−20 were considered "unknown.") -->
+
+> We excluded `r nrow(filtered.qualy)-nrow(subset(filtered.qualy, e_value<=1e-50))` OTUs because of e-value > 1e-50; with `r nrow(subset(filtered.qualy, e_value>1e-20))` OTUs with e-value > 1e-20.
+
+
+```{r}
+fungi.filt.e<-filtered.qualy[which(filtered.qualy$e_value<=1e-50),]
+dim(fungi.filt.e)
+
+```
+
+
+```{r}
+filtered.fungi.evalue <- subset(otu_table(physeq.filtered), rownames(otu_table(physeq.filtered)) %in% fungi.filt.e$OTU_ID...1)
+
+physeq.fungi.evalue <- merge_phyloseq(filtered.fungi.evalue, tax_table(physeq.filtered), sample_data(physeq.filtered))
+
+physeq.fungi.evalue
+```
+
+# Save phylo.data
+```{r}
+saveRDS(physeq.fungi.evalue, file = "data/4_physeq.rare.evalue.rds")
+```
+
+```{r}
+OTUsum<-as.integer(taxa_sums(physeq.fungi.evalue))
+str(OTUsum)
+mod.oct <- prestonfit(OTUsum, tiesplit = F)
+plot(mod.oct)
+
+```
+
+Along this quality filtering we have excluded `r length(taxa_names(physeq.fungi))-length(taxa_names(physeq.fungi.evalue))` OTUs which represent the `r round((length(taxa_names(physeq.fungi))-length(taxa_names(physeq.fungi.evalue)))/length(taxa_names(physeq.fungi))*100,2)`% of the initial OTU table with Kingdom FUNGI.
+
+
+We kept `r length(taxa_names(physeq.fungi.evalue))` OTUs which represent the `r round((length(taxa_names(physeq.fungi.evalue)))/length(taxa_names(physeq.fungi))*100,2)`% of the initial OTU table with Kingdom FUNGI.
+
+
+## OTU length
+
+Minimum OTU length is `r min(fungi.filt.e[,"query_len"])` and, maximum OTU length is `r max(fungi.filt.e[,"query_len"])` in this case.
+
+
+```{r eval= FALSE}
+write.table(otu_table(physeq.fungi.evalue), "data/OTU Table after quality filtering.csv", append = FALSE, quote = TRUE, sep = ";", eol = "\n", na = "NA", dec = ".", row.names = FALSE,
+            col.names = TRUE, qmethod = c("escape", "double"),
+            fileEncoding = "")
+```
+
+
+# Alpha diversity measures - Nature: homogenezation paper *******************
+```{r}
+alpha_est <- data.frame(
+  n_seq=colSums(otu_table(physeq.fungi.evalue)),
+  Richness = estimate_richness(physeq.fungi.evalue , measures = "Observed")[,1],
+  Chao1 = estimate_richness(physeq.fungi.evalue , measures = "Chao1")[,1],
+  ACE = estimate_richness(physeq.fungi.evalue , measures = "ACE")[,1],
+  Shannon = estimate_richness(physeq.fungi.evalue , measures = "Shannon")[,1],
+  InvSimpson = estimate_richness(physeq.fungi.evalue , measures = "InvSimpson")[,1],
+  Evenness = evenness(physeq.fungi.evalue,'pielou')
+)
+
+head(alpha_est)
+summary(head(alpha_est))
+
+corr <- round(cor(alpha_est), 1)
+ggcorrplot(corr, hc.order = TRUE, type = "lower", lab = TRUE)
+
+
+alpha_est%>%
+  ggplot(aes(x=n_seq, y=Richness))+
+  geom_point()+
+  geom_smooth()+
+  theme_bw()
+
+alpha_est%>%
+  ggplot(aes(x=n_seq, y=Chao1))+
+  geom_point()+
+  geom_smooth()+
+  theme_bw()
+
+```
+
+
+```{r}
+
+physeq.fungi.evalue_sample<-sample_data(physeq.fungi.evalue)
+
+physeq.fungi.evalue_sample<-merge(physeq.fungi.evalue_sample, alpha_est, by="row.names", all.x=TRUE)
+
+head(physeq.fungi.evalue_sample)
+
+dim(physeq.fungi.evalue_sample)
+
+write.table(physeq.fungi.evalue_sample, "data/sample data after quality filtering.csv", append = FALSE, quote = TRUE, sep = ";", eol = "\n", na = "NA", dec = ".", row.names = FALSE,
+            col.names = TRUE, qmethod = c("escape", "double"),
+            fileEncoding = "")
+```
+
+
+```{r}
+write.table(tax_table(physeq.fungi.evalue), "data/OTU Taxo after quality filtering.csv", append = FALSE, quote = TRUE, sep = ";", eol = "\n", na = "NA", dec = ".", row.names = FALSE,
+            col.names = TRUE, qmethod = c("escape", "double"),
+            fileEncoding = "")
+```
+
