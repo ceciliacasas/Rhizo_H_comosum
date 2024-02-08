@@ -43,17 +43,11 @@ colnames(otu)[14:25]<-c("e_value" , "query_len", "query_start", "query_end", "ta
 # Keep only soil samples
 
 The table contains:
-
 -   Soil samples (CC001 - CC238) 
-
 -   Seeds samples (1_Seed_No_St 1_Seed_St)
-
 -   ITS4ngsUni001 ITS4ngsUni003 ITS4ngsUni008 ITS4ngsUni014 ITS4ngsUni015 1_ITS4ngsUni_089 2_ITS4ngsUni_087 2_ITS4ngsUni_088 3_ITS4ngsUni_087 3_ITS4ngsUni_088 3_ITS4ngsUni_089 4_ITS4ngsUni_087 4_ITS4ngsUni_088
-
 -   NC1 NC2 NC3 NC4
-
 -   Pos1 Pos2 Pos3 Pos4
-
 -   empty1 empty2
 
 
